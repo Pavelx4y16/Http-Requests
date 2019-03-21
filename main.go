@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	conv "strconv"
+	"sync"
 	"time"
 )
 
@@ -15,12 +16,12 @@ var (
 	addressFlag    *string
 	requestNumFlag *int
 	timeOutFlag    *int
-	info           InfoServer
+	info           RequestsInfo
 )
 
 type Arguments map[string]string
 
-type InfoServer struct {
+type RequestsInfo struct {
 	RequestsNum            int
 	TotalTime              float64
 	AverageTime            float64
@@ -29,12 +30,12 @@ type InfoServer struct {
 	NotAnsweredRequestsNum int
 }
 
-func (info *InfoServer) String() string {
+func (info *RequestsInfo) String() string {
 	return fmt.Sprintf("\nRequests number: %d\nMin time: %f\nMax time: %f\nAverage time: %f\nTotal time: %f\nTime out requests: %d", info.RequestsNum,
 		info.MinTime, info.MaxTime, info.AverageTime, info.TotalTime, info.NotAnsweredRequestsNum)
 }
 
-func (info *InfoServer) update(time float64) {
+func (info *RequestsInfo) update(time float64) {
 	info.TotalTime += time
 	info.MaxTime = math.Max(info.MaxTime, time)
 	info.MinTime = math.Min(info.MinTime, time)
@@ -42,7 +43,7 @@ func (info *InfoServer) update(time float64) {
 	info.calculateAvg()
 }
 
-func (info *InfoServer) calculateAvg() error {
+func (info *RequestsInfo) calculateAvg() error {
 	if info.RequestsNum > 0 {
 		info.AverageTime = (float64)(info.TotalTime) / (float64)(info.RequestsNum)
 		return nil
@@ -50,7 +51,7 @@ func (info *InfoServer) calculateAvg() error {
 	return E.New("Division by zero!!!")
 }
 
-func (info *InfoServer) init() {
+func (info *RequestsInfo) init() {
 	info.RequestsNum = 0
 	info.TotalTime = 0
 	info.AverageTime = 0
@@ -62,12 +63,8 @@ func (info *InfoServer) init() {
 func init() {
 	addressFlag = flag.String("address", "https://google.com", "Address of server.")
 	requestNumFlag = flag.Int("num", 10, "Amount of requests.")
-	timeOutFlag = flag.Int("timeOut", 3, "Time out for waiting response from server.")
+	timeOutFlag = flag.Int("timeOut", 1, "Time out for waiting response from server.")
 	info.init()
-}
-
-func FlagInfo() {
-	fmt.Printf("Server: %s\nRequestNum: %d\nTimeOut: %d\n", *addressFlag, *requestNumFlag, *timeOutFlag)
 }
 
 func parseArgs() (args Arguments) {
@@ -78,20 +75,23 @@ func parseArgs() (args Arguments) {
 	return
 }
 
-func sendRrequest(client http.Client, address string) error {
+func sendRrequest(client http.Client, address string, mutex *sync.Mutex, wg *sync.WaitGroup) error {
 	start := time.Now()
-	resp, err := client.Get(address)
+	_, err := client.Get(address)
+	rTime := time.Since(start).Seconds()
+	mutex.Lock()
 	if err != nil {
-		if checkTimeoutError(err) {
+		if isTimeoutError(err) {
+			//		mutex.Lock()
 			info.NotAnsweredRequestsNum++
+			//		mutex.Unlock()
 		}
+		wg.Done()
 		return err
 	}
-	defer resp.Body.Close()
-	rTime := time.Since(start).Seconds()
 	info.update(rTime)
-	//fmt.Println("\n\n\n-------------------------------------\n\n\n")
-	//_, err = io.Copy(os.Stdout, resp.Body)
+	wg.Done()
+	mutex.Unlock()
 	return err
 }
 
@@ -108,29 +108,37 @@ func Perform(args Arguments) (err error) {
 	client := http.Client{
 		Timeout: time.Duration(timeOut * (int)(time.Second)),
 	}
+	var mutex sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(requestNum)
 	for i := 0; i < requestNum; i++ {
-		sendRrequest(client, address)
+		go sendRrequest(client, address, &mutex, &wg)
 	}
+	wg.Wait()
 	fmt.Println(info.String())
 	return err
 }
 
-func checkTimeoutError(err error) bool {
+func isTimeoutError(err error) bool {
 	er, ok := err.(net.Error)
 	return ok && er.Timeout()
 }
 
-func Success() {
-	fmt.Println("Operation was succesfylly complited!!!")
+func Success(time float64) {
+	//If I use printf --- the program is not responding for ages!!! Why???
+	fmt.Print("Operation was succesfylly complited in ")
+	fmt.Print(time)
+	fmt.Println(" seconds!!!")
 }
 
 func main() {
+	start := time.Now()
 	flag.Parse()
-	FlagInfo()
 	err := Perform(parseArgs())
 	if err != nil {
 		fmt.Println(err)
 		panic(err)
 	}
-	Success()
+	rTime := time.Since(start).Seconds()
+	Success(rTime)
 }
